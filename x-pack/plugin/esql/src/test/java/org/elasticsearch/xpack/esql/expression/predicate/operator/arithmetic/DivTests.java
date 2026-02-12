@@ -214,9 +214,8 @@ public class DivTests extends AbstractScalarFunctionTestCase {
 
         suppliers.addAll(
             denseVectorScalarCases(
-                "DivDoubleAndDenseVectorEvaluator",
+                "Div",
                 (v, s) -> v.stream().map(f -> (float) (f.doubleValue() / s.doubleValue())).toList(),
-                "DivDenseVectorAndDoubleEvaluator",
                 (s, v) -> v.stream().map(f -> (float) (s.doubleValue() / f.doubleValue())).toList()
             )
         );

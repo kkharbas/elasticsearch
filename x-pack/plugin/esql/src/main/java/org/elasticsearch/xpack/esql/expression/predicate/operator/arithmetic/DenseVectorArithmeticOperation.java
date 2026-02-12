@@ -30,17 +30,26 @@ public abstract class DenseVectorArithmeticOperation extends EsqlArithmeticOpera
     /** Set of arithmetic (quad) functions for dense_vectors. */
     public interface DenseVectorBinaryEvaluator {
         // when both arguments are dense_vectors
-        EvalOperator.ExpressionEvaluator.Factory apply(
+        EvalOperator.ExpressionEvaluator.Factory vectorOperation(
             Source source,
             EvalOperator.ExpressionEvaluator.Factory lhs,
             EvalOperator.ExpressionEvaluator.Factory rhs
         );
 
-        // when lhs is a scalar and rhs is a dense_vector
-        EvalOperator.ExpressionEvaluator.Factory apply(Source source, double lhs, EvalOperator.ExpressionEvaluator.Factory rhs);
+        // when lhs is a dense_vector and rhs is a scalar
+        EvalOperator.ExpressionEvaluator.Factory vectorScalarOperation(
+            Source source,
+            EvalOperator.ExpressionEvaluator.Factory vector,
+            Float scalar
+        );
 
         // when lhs is a dense_vector and rhs is a scalar
-        EvalOperator.ExpressionEvaluator.Factory apply(Source source, EvalOperator.ExpressionEvaluator.Factory lhs, double rhs);
+        EvalOperator.ExpressionEvaluator.Factory scalarVectorOperation(
+            Source source,
+            Float scalar,
+            EvalOperator.ExpressionEvaluator.Factory vector
+        );
+
     }
 
     protected DenseVectorArithmeticOperation(
@@ -119,14 +128,14 @@ public abstract class DenseVectorArithmeticOperation extends EsqlArithmeticOpera
         var commonType = dataType();
         if (commonType == DENSE_VECTOR) {
             if (left().dataType() == DENSE_VECTOR && right().dataType() == DENSE_VECTOR) {
-                return denseVectors.apply(source(), toEvaluator.apply(left()), toEvaluator.apply(right()));
+                return denseVectors.vectorOperation(source(), toEvaluator.apply(left()), toEvaluator.apply(right()));
             }
             if (left().dataType() != DENSE_VECTOR) {
-                double lhs = ((Number) left().fold(toEvaluator.foldCtx())).doubleValue();
-                return denseVectors.apply(source(), lhs, toEvaluator.apply(right()));
+                float lhs = ((Number) left().fold(toEvaluator.foldCtx())).floatValue();
+                return denseVectors.scalarVectorOperation(source(), lhs, toEvaluator.apply(right()));
             } else {
-                double rhs = ((Number) (right().fold(toEvaluator.foldCtx()))).doubleValue();
-                return denseVectors.apply(source(), toEvaluator.apply(left()), rhs);
+                float rhs = ((Number) (right().fold(toEvaluator.foldCtx()))).floatValue();
+                return denseVectors.vectorScalarOperation(source(), toEvaluator.apply(left()), rhs);
             }
         }
         return super.toEvaluator(toEvaluator);

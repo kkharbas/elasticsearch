@@ -12,6 +12,7 @@ import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.time.DateUtils;
 import org.elasticsearch.compute.ann.Evaluator;
 import org.elasticsearch.compute.ann.Fixed;
+import org.elasticsearch.compute.operator.EvalOperator;
 import org.elasticsearch.xpack.esql.core.expression.Expression;
 import org.elasticsearch.xpack.esql.core.tree.NodeInfo;
 import org.elasticsearch.xpack.esql.core.tree.Source;
@@ -73,7 +74,7 @@ public class Sub extends DateTimeArithmeticOperation implements BinaryComparison
             SubLongsEvaluator.Factory::new,
             SubUnsignedLongsEvaluator.Factory::new,
             SubDoublesEvaluator.Factory::new,
-            new DenseVectorsEvaluator.SubEvaluator(),
+            SUB_DENSE_VECTOR_EVALUATOR,
             SubDatetimesEvaluator.Factory::new,
             SubDateNanosEvaluator.Factory::new
         );
@@ -88,7 +89,7 @@ public class Sub extends DateTimeArithmeticOperation implements BinaryComparison
             SubLongsEvaluator.Factory::new,
             SubUnsignedLongsEvaluator.Factory::new,
             SubDoublesEvaluator.Factory::new,
-            new DenseVectorsEvaluator.SubEvaluator(),
+            SUB_DENSE_VECTOR_EVALUATOR,
             SubDatetimesEvaluator.Factory::new,
             SubDateNanosEvaluator.Factory::new
         );
@@ -194,4 +195,37 @@ public class Sub extends DateTimeArithmeticOperation implements BinaryComparison
     public Sub withConfiguration(Configuration configuration) {
         return new Sub(source(), left(), right(), configuration);
     }
+
+    private static final DenseVectorBinaryEvaluator SUB_DENSE_VECTOR_EVALUATOR = new DenseVectorBinaryEvaluator() {
+
+        public static final String OP_NAME = "Sub";
+
+        @Override
+        public EvalOperator.ExpressionEvaluator.Factory vectorOperation(
+            Source source,
+            EvalOperator.ExpressionEvaluator.Factory lhs,
+            EvalOperator.ExpressionEvaluator.Factory rhs
+        ) {
+            return new DenseVectorsEvaluator.Factory(source, lhs, rhs, (v1, v2) -> v1 - v2, OP_NAME);
+        }
+
+        @Override
+        public EvalOperator.ExpressionEvaluator.Factory vectorScalarOperation(
+            Source source,
+            EvalOperator.ExpressionEvaluator.Factory vector,
+            Float scalar
+        ) {
+            return new DenseVectorsScalarEvaluator.Factory(source, vector, scalar, (v, s) -> v - s, OP_NAME);
+        }
+
+        @Override
+        public EvalOperator.ExpressionEvaluator.Factory scalarVectorOperation(
+            Source source,
+            Float scalar,
+            EvalOperator.ExpressionEvaluator.Factory vector
+        ) {
+            // Invert the order of arguments and the operator to reuse the same DenseVectorsScalarEvaluator
+            return new DenseVectorsScalarEvaluator.Factory(source, scalar, vector, (s, v) -> s - v, OP_NAME);
+        }
+    };
 }

@@ -10,6 +10,7 @@ package org.elasticsearch.xpack.esql.expression.predicate.operator.arithmetic;
 import org.elasticsearch.common.io.stream.NamedWriteableRegistry;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.compute.ann.Evaluator;
+import org.elasticsearch.compute.operator.EvalOperator;
 import org.elasticsearch.xpack.esql.core.expression.Expression;
 import org.elasticsearch.xpack.esql.core.tree.NodeInfo;
 import org.elasticsearch.xpack.esql.core.tree.Source;
@@ -52,7 +53,7 @@ public class Mul extends DenseVectorArithmeticOperation implements BinaryCompari
             MulLongsEvaluator.Factory::new,
             MulUnsignedLongsEvaluator.Factory::new,
             MulDoublesEvaluator.Factory::new,
-            new DenseVectorsEvaluator.MulEvaluator()
+            MUL_DENSE_VECTOR_EVALUATOR
         );
     }
 
@@ -64,7 +65,7 @@ public class Mul extends DenseVectorArithmeticOperation implements BinaryCompari
             MulLongsEvaluator.Factory::new,
             MulUnsignedLongsEvaluator.Factory::new,
             MulDoublesEvaluator.Factory::new,
-            new DenseVectorsEvaluator.MulEvaluator()
+            MUL_DENSE_VECTOR_EVALUATOR
         );
     }
 
@@ -117,5 +118,37 @@ public class Mul extends DenseVectorArithmeticOperation implements BinaryCompari
     static double processDoubles(double lhs, double rhs) {
         return NumericUtils.asFiniteNumber(lhs * rhs);
     }
+
+    private static final DenseVectorBinaryEvaluator MUL_DENSE_VECTOR_EVALUATOR = new DenseVectorBinaryEvaluator() {
+
+        public static final String OP_NAME = "Mul";
+
+        @Override
+        public EvalOperator.ExpressionEvaluator.Factory vectorOperation(
+            Source source,
+            EvalOperator.ExpressionEvaluator.Factory lhs,
+            EvalOperator.ExpressionEvaluator.Factory rhs
+        ) {
+            return new DenseVectorsEvaluator.Factory(source, lhs, rhs, (v1, v2) -> v1 * v2, OP_NAME);
+        }
+
+        @Override
+        public EvalOperator.ExpressionEvaluator.Factory vectorScalarOperation(
+            Source source,
+            EvalOperator.ExpressionEvaluator.Factory vector,
+            Float scalar
+        ) {
+            return new DenseVectorsScalarEvaluator.Factory(source, vector, scalar, (v1, v2) -> v1 * v2, OP_NAME);
+        }
+
+        @Override
+        public EvalOperator.ExpressionEvaluator.Factory scalarVectorOperation(
+            Source source,
+            Float scalar,
+            EvalOperator.ExpressionEvaluator.Factory vector
+        ) {
+            return new DenseVectorsScalarEvaluator.Factory(source, scalar, vector, (v1, v2) -> v1 * v2, OP_NAME);
+        }
+    };
 
 }
