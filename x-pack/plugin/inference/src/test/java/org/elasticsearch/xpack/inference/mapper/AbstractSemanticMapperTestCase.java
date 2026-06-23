@@ -22,7 +22,6 @@ import org.elasticsearch.plugins.Plugin;
 import org.elasticsearch.test.ClusterServiceUtils;
 import org.elasticsearch.test.client.NoOpClient;
 import org.elasticsearch.threadpool.TestThreadPool;
-import org.elasticsearch.xcontent.XContentBuilder;
 import org.elasticsearch.xpack.core.XPackClientPlugin;
 import org.elasticsearch.xpack.diskbbq.DiskBBQPlugin;
 import org.elasticsearch.xpack.inference.InferencePlugin;
@@ -31,7 +30,6 @@ import org.junit.After;
 import org.junit.AssumptionViolatedException;
 import org.junit.Before;
 
-import java.io.IOException;
 import java.util.Collection;
 import java.util.List;
 import java.util.function.Supplier;
@@ -98,7 +96,9 @@ abstract class AbstractSemanticMapperTestCase extends MapperTestCase {
 
     @After
     private void stopThreadPool() {
-        threadPool.close();
+        if (threadPool != null) {
+            threadPool.close();
+        }
     }
 
     /**
@@ -121,10 +121,9 @@ abstract class AbstractSemanticMapperTestCase extends MapperTestCase {
     }
 
     @Override
-    protected abstract void minimalMapping(XContentBuilder b) throws IOException;
-
-    @Override
     protected Object getSampleValueForDocument() {
+        // Semantic fields are populated asynchronously by the inference action filter; unit tests do not
+        // exercise document indexing of the field value directly through MapperTestCase.
         return null;
     }
 
@@ -142,7 +141,7 @@ abstract class AbstractSemanticMapperTestCase extends MapperTestCase {
     protected void registerParameters(ParameterChecker checker) throws IOException {
         // These parameters have complex interdependencies (inference endpoints, model types, dense vs sparse)
         // that cannot be expressed through the simple ParameterChecker mechanism. They are covered by
-        // dedicated update tests.
+        // dedicated update tests in the concrete subclasses (e.g. testUpdateInferenceId*, testUpdateModelSettings).
         checker.registerIgnoredParameter("inference_id");
         checker.registerIgnoredParameter("search_inference_id");
         checker.registerIgnoredParameter("model_settings");
@@ -152,7 +151,7 @@ abstract class AbstractSemanticMapperTestCase extends MapperTestCase {
 
     @Override
     protected Object generateRandomInputValue(MappedFieldType ft) {
-        assumeFalse("doc_values are not supported in semantic fields", true);
+        assumeFalse("doc_values are not supported for semantic field types", true);
         return null;
     }
 
