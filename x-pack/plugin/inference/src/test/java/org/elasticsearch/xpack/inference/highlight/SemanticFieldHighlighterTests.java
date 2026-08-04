@@ -12,7 +12,6 @@ import org.elasticsearch.cluster.metadata.IndexMetadata;
 import org.elasticsearch.common.bytes.BytesReference;
 import org.elasticsearch.common.io.Streams;
 import org.elasticsearch.common.settings.Settings;
-import org.elasticsearch.common.xcontent.XContentHelper;
 import org.elasticsearch.index.IndexVersion;
 import org.elasticsearch.index.mapper.SourceToParse;
 import org.elasticsearch.index.query.NestedQueryBuilder;
@@ -25,7 +24,6 @@ import org.elasticsearch.xpack.inference.mapper.SemanticFieldMapper;
 
 import java.io.IOException;
 import java.util.Arrays;
-import java.util.Map;
 
 public class SemanticFieldHighlighterTests extends AbstractSemanticHighlighterTests {
     private static final String SEMANTIC_FIELD_IMAGE = "field-semantic-image";
@@ -36,8 +34,8 @@ public class SemanticFieldHighlighterTests extends AbstractSemanticHighlighterTe
         super(
             Settings.builder().put(IndexMetadata.SETTING_VERSION_CREATED, IndexVersion.current()).build(),
             Streams.readFully(SemanticFieldHighlighterTests.class.getResourceAsStream("mappings-semantic.json")).utf8ToString(),
-            sourceFromFile(SemanticFieldHighlighterTests.class.getResourceAsStream("sample-doc-semantic.json.gz")),
-            denseVectorQueryData()
+            buildDenseFieldSourceToParse("field", ".omni-model-id", "embedding"),
+            buildDenseVectorQueryData(generatePassages())
         );
     }
 
@@ -104,12 +102,5 @@ public class SemanticFieldHighlighterTests extends AbstractSemanticHighlighterTe
             HighlightBuilder.Order.SCORE,
             new String[] { IMAGE_DATA_URL }
         );
-    }
-
-    @SuppressWarnings("unchecked")
-    private static Map<String, Object> denseVectorQueryData() throws IOException {
-        var input = Streams.readFully(SemanticFieldHighlighterTests.class.getResourceAsStream("queries.json"));
-        var map = XContentHelper.convertToMap(input, false, XContentType.JSON).v2();
-        return (Map<String, Object>) map.get("dense_vector_1");
     }
 }

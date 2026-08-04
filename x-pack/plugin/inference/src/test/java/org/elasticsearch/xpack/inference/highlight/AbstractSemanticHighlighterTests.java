@@ -16,11 +16,11 @@ import org.apache.lucene.search.TopDocs;
 import org.apache.lucene.search.join.ScoreMode;
 import org.apache.lucene.store.Directory;
 import org.apache.lucene.tests.index.RandomIndexWriter;
-import org.apache.lucene.util.BytesRef;
 import org.elasticsearch.action.OriginalIndices;
 import org.elasticsearch.action.search.SearchRequest;
 import org.elasticsearch.cluster.metadata.IndexMetadata;
 import org.elasticsearch.common.bytes.BytesArray;
+import org.elasticsearch.common.bytes.BytesReference;
 import org.elasticsearch.common.lucene.search.Queries;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.index.IndexVersion;
@@ -46,20 +46,21 @@ import org.elasticsearch.search.internal.ShardSearchRequest;
 import org.elasticsearch.search.lookup.Source;
 import org.elasticsearch.search.rank.RankDoc;
 import org.elasticsearch.search.vectors.KnnVectorQueryBuilder;
+import org.elasticsearch.xcontent.XContentBuilder;
+import org.elasticsearch.xcontent.XContentFactory;
 import org.elasticsearch.xcontent.XContentType;
 import org.elasticsearch.xpack.inference.InferencePlugin;
 import org.elasticsearch.xpack.inference.mapper.SemanticFieldMapper;
 import org.mockito.Mockito;
 
 import java.io.IOException;
-import java.io.InputStream;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.zip.GZIPInputStream;
 
 import static org.hamcrest.CoreMatchers.equalTo;
 import static org.mockito.Mockito.mock;
@@ -68,16 +69,62 @@ public abstract class AbstractSemanticHighlighterTests extends MapperServiceTest
     private static final String SEMANTIC_FIELD = "field-semantic";
     private static final String SEMANTIC_FIELD_DISK_BBQ = "field-semantic-disk_bbq";
 
+    /**
+     * Vector dimension matching the semantic field mappings.
+     */
+    static final int DIMS = 384;
+
+    /**
+     * Number of positive components (out of {@link #DIMS}) for each chunk vector.
+     *
+     * <p>The query vector is the all-positive unit vector {@code q = [1/sqrt(DIMS), ..., 1/sqrt(DIMS)]}.
+     * Chunk {@code i} uses a unit vector whose first {@code CHUNK_K_VALUES[i]} components are
+     * {@code +1/sqrt(DIMS)} and the remaining components are {@code -1/sqrt(DIMS)}.
+     * The cosine similarity between the query and chunk {@code i} is {@code (2*k_i - DIMS) / DIMS},
+     * and the Lucene score is {@code (1 + cosine) / 2}.
+     *
+     * <p>Score ordering (descending): chunk 1 (k=374) > chunk 3 (k=365) > chunk 0 (k=307) >
+     * chunk 4 (k=269) > chunk 2 (k=230). Chunks 1 and 3 pass the 0.85 similarity threshold.
+     *
+     * <p>This design is intentionally non-sequential so that score order and document offset order differ,
+     * exercising both {@link HighlightBuilder.Order#SCORE} and {@link HighlightBuilder.Order#NONE}.
+     *
+     * <p>Because all vector components have the same magnitude, 1-bit BBQ quantization preserves the
+     * ordering exactly — the query's {@code +1/sqrt(DIMS)} components all quantize to the same sign,
+     * and the score difference between chunks is captured purely by the number of positive bits.
+     */
+    static final int[] CHUNK_K_VALUES = { 307, 374, 230, 365, 269 };
+
+    /**
+     * Similarity score threshold used in the threshold-filtered highlight tests.
+     * Corresponds to a minimum cosine of {@code 2 * SIMILARITY_THRESHOLD - 1 = 0.70}.
+     */
+    static final float SIMILARITY_THRESHOLD = 0.85f;
+
     final MapperService mapperService;
     final SourceToParse sourceToParse;
-    final Map<String, Object> queryData;
+    final DenseVectorQueryData denseVectorQueryData;
+
+    /**
+     * Holds the pre-computed query vector and expected highlight results for dense-vector tests.
+     */
+    record DenseVectorQueryData(
+        float[] queryVector,
+        String[] expectedByScore,
+        String[] expectedByOffset,
+        String[] expectedWithSimilarityThreshold
+    ) {}
 
     @SuppressWarnings("this-escape")
-    public AbstractSemanticHighlighterTests(Settings settings, String mappings, SourceToParse sourceToParse, Map<String, Object> queryData)
-        throws IOException {
+    public AbstractSemanticHighlighterTests(
+        Settings settings,
+        String mappings,
+        SourceToParse sourceToParse,
+        DenseVectorQueryData denseVectorQueryData
+    ) throws IOException {
         this.mapperService = createMapperService(IndexMetadata.SETTING_INDEX_VERSION_CREATED.get(settings), settings, mappings);
         this.sourceToParse = sourceToParse;
-        this.queryData = queryData;
+        this.denseVectorQueryData = denseVectorQueryData;
     }
 
     @Override
@@ -85,9 +132,8 @@ public abstract class AbstractSemanticHighlighterTests extends MapperServiceTest
         return List.of(new InferencePlugin(Settings.EMPTY));
     }
 
-    @SuppressWarnings("unchecked")
     public void testDenseVector() throws Exception {
-        float[] vector = readDenseVector(queryData.get("embeddings"));
+        float[] vector = denseVectorQueryData.queryVector();
         var fieldType = (SemanticFieldMapper.SemanticFieldType) mapperService.mappingLookup().getFieldType(SEMANTIC_FIELD);
         KnnVectorQueryBuilder knnQuery = new KnnVectorQueryBuilder(
             fieldType.getEmbeddingsField().fullPath(),
@@ -101,7 +147,7 @@ public abstract class AbstractSemanticHighlighterTests extends MapperServiceTest
         NestedQueryBuilder nestedQueryBuilder = new NestedQueryBuilder(fieldType.getChunksField().fullPath(), knnQuery, ScoreMode.Max);
         var shardRequest = createShardSearchRequest(nestedQueryBuilder);
 
-        String[] expectedScorePassages = ((List<String>) queryData.get("expected_by_score")).toArray(String[]::new);
+        String[] expectedScorePassages = denseVectorQueryData.expectedByScore();
         for (int i = 0; i < expectedScorePassages.length; i++) {
             assertHighlightOneDoc(
                 mapperService,
@@ -115,7 +161,7 @@ public abstract class AbstractSemanticHighlighterTests extends MapperServiceTest
             );
         }
 
-        String[] expectedOffsetPassages = ((List<String>) queryData.get("expected_by_offset")).toArray(String[]::new);
+        String[] expectedOffsetPassages = denseVectorQueryData.expectedByOffset();
         assertHighlightOneDoc(
             mapperService,
             createSearchExecutionContext(mapperService),
@@ -128,9 +174,8 @@ public abstract class AbstractSemanticHighlighterTests extends MapperServiceTest
         );
     }
 
-    @SuppressWarnings("unchecked")
     public void testDenseVectorWithSimilarityThreshold() throws Exception {
-        float[] vector = readDenseVector(queryData.get("embeddings"));
+        float[] vector = denseVectorQueryData.queryVector();
         var fieldType = (SemanticFieldMapper.SemanticFieldType) mapperService.mappingLookup().getFieldType(SEMANTIC_FIELD);
 
         KnnVectorQueryBuilder knnQuery = new KnnVectorQueryBuilder(
@@ -140,12 +185,12 @@ public abstract class AbstractSemanticHighlighterTests extends MapperServiceTest
             10,
             10f,
             null,
-            0.85f
+            SIMILARITY_THRESHOLD
         );
         NestedQueryBuilder nestedQueryBuilder = new NestedQueryBuilder(fieldType.getChunksField().fullPath(), knnQuery, ScoreMode.Max);
         var shardRequest = createShardSearchRequest(nestedQueryBuilder);
 
-        String[] expectedPassages = ((List<String>) queryData.get("expected_with_similarity_threshold")).toArray(String[]::new);
+        String[] expectedPassages = denseVectorQueryData.expectedWithSimilarityThreshold();
         assertHighlightOneDoc(
             mapperService,
             createSearchExecutionContext(mapperService),
@@ -158,9 +203,8 @@ public abstract class AbstractSemanticHighlighterTests extends MapperServiceTest
         );
     }
 
-    @SuppressWarnings("unchecked")
     public void testDenseVectorWithDiskBBQandSimilarityThreshold() throws Exception {
-        float[] vector = readDenseVector(queryData.get("embeddings"));
+        float[] vector = denseVectorQueryData.queryVector();
         var fieldType = (SemanticFieldMapper.SemanticFieldType) mapperService.mappingLookup().getFieldType(SEMANTIC_FIELD_DISK_BBQ);
 
         KnnVectorQueryBuilder knnQuery = new KnnVectorQueryBuilder(
@@ -170,12 +214,12 @@ public abstract class AbstractSemanticHighlighterTests extends MapperServiceTest
             10,
             10f,
             null,
-            0.85f
+            SIMILARITY_THRESHOLD
         );
         NestedQueryBuilder nestedQueryBuilder = new NestedQueryBuilder(fieldType.getChunksField().fullPath(), knnQuery, ScoreMode.Max);
         var shardRequest = createShardSearchRequest(nestedQueryBuilder);
 
-        String[] expectedPassages = ((List<String>) queryData.get("expected_with_similarity_threshold")).toArray(String[]::new);
+        String[] expectedPassages = denseVectorQueryData.expectedWithSimilarityThreshold();
         assertHighlightOneDoc(
             mapperService,
             createSearchExecutionContext(mapperService),
@@ -188,9 +232,8 @@ public abstract class AbstractSemanticHighlighterTests extends MapperServiceTest
         );
     }
 
-    @SuppressWarnings("unchecked")
     public void testDenseVectorWithDiskBBQ() throws Exception {
-        float[] vector = readDenseVector(queryData.get("embeddings"));
+        float[] vector = denseVectorQueryData.queryVector();
         var fieldType = (SemanticFieldMapper.SemanticFieldType) mapperService.mappingLookup().getFieldType(SEMANTIC_FIELD_DISK_BBQ);
 
         KnnVectorQueryBuilder knnQuery = new KnnVectorQueryBuilder(
@@ -205,7 +248,7 @@ public abstract class AbstractSemanticHighlighterTests extends MapperServiceTest
         NestedQueryBuilder nestedQueryBuilder = new NestedQueryBuilder(fieldType.getChunksField().fullPath(), knnQuery, ScoreMode.Max);
         var shardRequest = createShardSearchRequest(nestedQueryBuilder);
 
-        String[] expectedScorePassages = ((List<String>) queryData.get("expected_by_score")).toArray(String[]::new);
+        String[] expectedScorePassages = denseVectorQueryData.expectedByScore();
         for (int i = 0; i < expectedScorePassages.length; i++) {
             assertHighlightOneDoc(
                 mapperService,
@@ -219,7 +262,7 @@ public abstract class AbstractSemanticHighlighterTests extends MapperServiceTest
             );
         }
 
-        String[] expectedOffsetPassages = ((List<String>) queryData.get("expected_by_offset")).toArray(String[]::new);
+        String[] expectedOffsetPassages = denseVectorQueryData.expectedByOffset();
         assertHighlightOneDoc(
             mapperService,
             createSearchExecutionContext(mapperService),
@@ -232,9 +275,8 @@ public abstract class AbstractSemanticHighlighterTests extends MapperServiceTest
         );
     }
 
-    @SuppressWarnings("unchecked")
     public void testNoSemanticField() throws Exception {
-        float[] vector = readDenseVector(queryData.get("embeddings"));
+        float[] vector = denseVectorQueryData.queryVector();
         var fieldType = (SemanticFieldMapper.SemanticFieldType) mapperService.mappingLookup().getFieldType(SEMANTIC_FIELD);
 
         KnnVectorQueryBuilder knnQuery = new KnnVectorQueryBuilder(
@@ -267,22 +309,23 @@ public abstract class AbstractSemanticHighlighterTests extends MapperServiceTest
         return mapperService;
     }
 
-    private static float[] readDenseVector(Object value) {
-        if (value instanceof List<?> lst) {
-            float[] res = new float[lst.size()];
-            int pos = 0;
-            for (var obj : lst) {
-                if (obj instanceof Number number) {
-                    res[pos++] = number.floatValue();
-                } else {
-                    throw new IllegalArgumentException("Expected number, got " + obj.getClass().getSimpleName());
-                }
-            }
-            return res;
-        }
-        throw new IllegalArgumentException("Expected list, got " + value.getClass().getSimpleName());
-    }
-
+    /**
+     * Steps:
+     * 1. Parse source into a document and create an index with it.
+     * 2. Create a reader and searcher for the index.
+     * 3. Create a FetchContext and HitContext for the document.
+     * 4. Create a HighlightContext for the field and call the highlighter.
+     * 5. Assert that the highlighted passages match the expected passages.
+     * @param mapperService
+     * @param execContext
+     * @param request
+     * @param source
+     * @param fieldName
+     * @param numFragments
+     * @param order
+     * @param expectedPassages
+     * @throws Exception
+     */
     static void assertHighlightOneDoc(
         MapperService mapperService,
         SearchExecutionContext execContext,
@@ -367,9 +410,155 @@ public abstract class AbstractSemanticHighlighterTests extends MapperServiceTest
         return new ShardSearchRequest(OriginalIndices.NONE, request, new ShardId("index", "index", 0), 0, 1, AliasFilter.EMPTY, 1, 0, null);
     }
 
-    static SourceToParse sourceFromFile(InputStream inputStream) throws IOException {
-        try (var in = new GZIPInputStream(inputStream)) {
-            return new SourceToParse("0", new BytesArray(new BytesRef(in.readAllBytes())), XContentType.JSON);
+    // ---- Vector and passage generation utilities ----
+
+    /**
+     * Returns the unit query vector: all components equal to {@code 1/sqrt(DIMS)}.
+     */
+    static float[] createQueryVector() {
+        float c = 1.0f / (float) Math.sqrt(DIMS);
+        float[] v = new float[DIMS];
+        Arrays.fill(v, c);
+        return v;
+    }
+
+    /**
+     * Returns a unit chunk vector with {@code k} positive and {@code DIMS - k} negative components,
+     * each of magnitude {@code 1/sqrt(DIMS)}.
+     */
+    static float[] createChunkVector(int k) {
+        float c = 1.0f / (float) Math.sqrt(DIMS);
+        float[] v = new float[DIMS];
+        for (int i = 0; i < DIMS; i++) {
+            v[i] = i < k ? c : -c;
         }
+        return v;
+    }
+
+    /** Returns short passage strings, one per entry in {@link #CHUNK_K_VALUES}. */
+    static String[] generatePassages() {
+        String[] passages = new String[CHUNK_K_VALUES.length];
+        for (int i = 0; i < passages.length; i++) {
+            passages[i] = "passage " + i;
+        }
+        return passages;
+    }
+
+    /**
+     * Returns {@code [start, end]} character offsets for each passage in the full text produced by
+     * {@link #buildFullText(String[])}, where passages are joined by {@code '\n'}.
+     */
+    static int[][] computeOffsets(String[] passages) {
+        int[][] offsets = new int[passages.length][2];
+        int pos = 0;
+        for (int i = 0; i < passages.length; i++) {
+            offsets[i][0] = pos;
+            pos += passages[i].length();
+            offsets[i][1] = pos;
+            if (i < passages.length - 1) {
+                pos++; // '\n' separator
+            }
+        }
+        return offsets;
+    }
+
+    /** Joins passages with {@code '\n'} to form the source field text. */
+    static String buildFullText(String[] passages) {
+        return String.join("\n", passages);
+    }
+
+    /**
+     * Builds the {@link DenseVectorQueryData} for the given passages by computing the score
+     * ordering from {@link #CHUNK_K_VALUES} and applying the {@link #SIMILARITY_THRESHOLD}.
+     */
+    static DenseVectorQueryData buildDenseVectorQueryData(String[] passages) {
+        int n = CHUNK_K_VALUES.length;
+
+        // Sort chunk indices by descending k value (= descending score).
+        Integer[] order = new Integer[n];
+        for (int i = 0; i < n; i++) {
+            order[i] = i;
+        }
+        Arrays.sort(order, (a, b) -> Integer.compare(CHUNK_K_VALUES[b], CHUNK_K_VALUES[a]));
+
+        String[] expectedByScore = new String[n];
+        for (int i = 0; i < n; i++) {
+            expectedByScore[i] = passages[order[i]];
+        }
+
+        // score = (1 + cos) / 2 >= threshold → cos >= 2*threshold - 1
+        float minCos = 2 * SIMILARITY_THRESHOLD - 1;
+        List<String> thresholdPassages = new ArrayList<>();
+        for (int idx : order) { // already in descending score order
+            float cos = (float) (2 * CHUNK_K_VALUES[idx] - DIMS) / DIMS;
+            if (cos >= minCos) {
+                thresholdPassages.add(passages[idx]);
+            }
+        }
+
+        return new DenseVectorQueryData(createQueryVector(), expectedByScore, passages.clone(), thresholdPassages.toArray(String[]::new));
+    }
+
+    /**
+     * Writes a dense semantic field's inference section into an already-open
+     * {@code _inference_fields} object in {@code builder}.
+     *
+     * @param chunkSourceField the field name key used inside {@code chunks} (typically the text
+     *                         source field such as {@code "field"} or {@code "body"})
+     */
+    static void writeDenseSemanticFieldInference(
+        XContentBuilder builder,
+        String semanticFieldName,
+        String inferenceId,
+        String taskType,
+        String chunkSourceField,
+        int[][] offsets
+    ) throws IOException {
+        builder.startObject(semanticFieldName);
+        builder.startObject("inference");
+        builder.field("inference_id", inferenceId);
+        builder.startObject("model_settings");
+        builder.field("task_type", taskType);
+        builder.field("dimensions", DIMS);
+        builder.field("similarity", "cosine");
+        builder.field("element_type", "float");
+        builder.endObject(); // model_settings
+        builder.startObject("chunks");
+        builder.startArray(chunkSourceField);
+        for (int i = 0; i < CHUNK_K_VALUES.length; i++) {
+            builder.startObject();
+            builder.field("start_offset", offsets[i][0]);
+            builder.field("end_offset", offsets[i][1]);
+            builder.array("embeddings", createChunkVector(CHUNK_K_VALUES[i]));
+            builder.endObject();
+        }
+        builder.endArray();
+        builder.endObject(); // chunks
+        builder.endObject(); // inference
+        builder.endObject(); // semanticFieldName
+    }
+
+    /**
+     * Builds a {@link SourceToParse} containing the full text in {@code textFieldName} and
+     * inference data for two dense semantic fields ({@code field-semantic} and
+     * {@code field-semantic-disk_bbq}) inside {@code _inference_fields}.
+     *
+     * @param textFieldName  the text source field (e.g. {@code "field"} or {@code "body"})
+     * @param inferenceId    the inference endpoint id stored in model metadata
+     * @param taskType       the model task type (e.g. {@code "embedding"} or {@code "text_embedding"})
+     */
+    static SourceToParse buildDenseFieldSourceToParse(String textFieldName, String inferenceId, String taskType) throws IOException {
+        String[] passages = generatePassages();
+        int[][] offsets = computeOffsets(passages);
+
+        XContentBuilder builder = XContentFactory.jsonBuilder().startObject();
+        builder.field(textFieldName, buildFullText(passages));
+        builder.startObject("_inference_fields");
+        writeDenseSemanticFieldInference(builder, "field-semantic", inferenceId, taskType, textFieldName, offsets);
+        writeDenseSemanticFieldInference(builder, "field-semantic-disk_bbq", inferenceId, taskType, textFieldName, offsets);
+        builder.endObject(); // _inference_fields
+        builder.endObject();
+
+        return new SourceToParse("0", BytesReference.bytes(builder), XContentType.JSON);
     }
 }
