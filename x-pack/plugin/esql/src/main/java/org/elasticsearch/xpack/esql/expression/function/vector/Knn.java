@@ -432,7 +432,9 @@ public class Knn extends SingleFieldFullTextFunction
             similarityThreshold,
             // Allocate a scratch buffer whenever we will actually read the field vector: either to compare against
             // the threshold or to validate unit length for V_DOT_PRODUCT.
-            context -> (similarityThreshold == null && metric != VectorSimilarityMetric.V_DOT_PRODUCT) ? null : new float[queryVector.length]
+            context -> (similarityThreshold == null && metric != VectorSimilarityMetric.V_DOT_PRODUCT)
+                ? null
+                : new float[queryVector.length]
         );
     }
 
