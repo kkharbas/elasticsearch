@@ -221,30 +221,22 @@ id:integer | _score:double
 5          | 0.009009009009009009
 ;
 
-// Test 10: v_dot_product carries the same precondition as the dot_product mapping similarity - the raw value only
-// falls in [-1, 1], and so the score only falls in [0, 1], when both vectors are unit-length. Nothing normalizes a
-// runtime expression's vectors, so these deliberately non-unit vectors score well above 1. The ranking is still
-// correct, which is why the raw value is not clamped.
-knnRuntimeWithDotProductSimilarityOnNonUnitVectors
+// Test 10: v_dot_product requires unit-length vectors. A field vector with squared magnitude != 1 triggers
+// a per-row warning and is excluded; the result is empty.
+knnRuntimeWithDotProductSimilarityRejectsNonUnitVectors
 required_capability: knn_runtime_field
 required_capability: fn_knn_runtime_vector_similarity
 pragma: knn_runtime_field=true
 
-FROM knn_hex_vectors METADATA _score
-| EVAL dv = to_dense_vector(emb_hex)
-| WHERE knn(dv, [64, 0, 0], {"vector_similarity": "v_dot_product"})
-| SORT id ASC
-| KEEP id, _score
+ROW dv = to_dense_vector([2.0, 0.0, 0.0])
+| WHERE knn(dv, [1.0, 0.0, 0.0], {"vector_similarity": "v_dot_product"})
+| KEEP dv
 | LIMIT 10
 ;
+warning:Line 2:9: evaluation of [knn(dv, [1.0, 0.0, 0.0], {\"vector_similarity\": \"v_dot_product\"})] failed, treating result as null. Only first 20 failures recorded.
+warning:Line 2:9: java.lang.IllegalArgumentException: v_dot_product requires unit-length vectors but encountered squared magnitude [4.0]
 
-id:integer | _score:double
-0          | 2048.5
-1          | 0.5
-2          | 0.5
-3          | 1440.5
-4          | 1824.5
-5          | 1024.5
+dv:dense_vector
 ;
 
 // Test 11: v_dot_product on unit-length vectors, where the score does land in [0, 1]: the vectors are 36.87
