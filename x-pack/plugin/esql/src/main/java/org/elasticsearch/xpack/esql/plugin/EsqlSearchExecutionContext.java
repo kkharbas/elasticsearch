@@ -29,6 +29,11 @@ public class EsqlSearchExecutionContext extends SearchExecutionContext {
         return new ReinitializingSourceProvider(super::createSourceProvider);
     }
 
+    @Override
+    public boolean allowNonIndexedVectorSearch() {
+        return true;
+    }
+
     /**
      * Return the {@link QueryWarnings} bridge for this context.
      */

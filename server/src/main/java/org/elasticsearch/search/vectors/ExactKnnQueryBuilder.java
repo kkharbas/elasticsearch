@@ -27,7 +27,7 @@ import java.util.Objects;
 
 /**
  * Exact knn query builder. Will iterate and score all documents that have the provided knn field in the index.
- * Useful in inner hits scoring scenarios.
+ * Useful in inner hits scoring scenarios. Contexts that allow non-indexed vector search can also score vectors stored in doc values.
  */
 public class ExactKnnQueryBuilder extends LeafQueryBuilder<ExactKnnQueryBuilder> {
     public static final String NAME = "exact_knn";
@@ -131,6 +131,9 @@ public class ExactKnnQueryBuilder extends LeafQueryBuilder<ExactKnnQueryBuilder>
             );
         }
         final DenseVectorFieldMapper.DenseVectorFieldType vectorFieldType = (DenseVectorFieldMapper.DenseVectorFieldType) fieldType;
+        if (vectorFieldType.isSearchable() == false && context.allowNonIndexedVectorSearch()) {
+            return vectorFieldType.createExactKnnQuery(query, vectorSimilarity, null, false);
+        }
         return vectorFieldType.createIndexedExactKnnQuery(query, vectorSimilarity, oversample);
     }
 

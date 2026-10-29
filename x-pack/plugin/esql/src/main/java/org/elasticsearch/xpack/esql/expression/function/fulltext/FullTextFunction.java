@@ -691,7 +691,7 @@ public abstract class FullTextFunction extends Function
             return builder;
         }
         // Coordinator-side query-builder rewrite is skipped for runtime search (see requiresQueryBuilderRewrite).
-        // ReplacePotentiallyUnmappedFieldWithMappedField can later make the field pushable on a data node without
+        // ReplacePotentiallyUnmappedFieldWithMappedFiel    d can later make the field pushable on a data node without
         // attaching a rewritten QueryBuilder to the expression, so build it here when needed.
         assert isRuntimeSearch() == false : "runtime search must not use LuceneQueryEvaluator";
         return asQuery(LucenePushdownPredicates.DEFAULT, TranslatorHandler.TRANSLATOR_HANDLER).toQueryBuilder();

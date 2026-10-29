@@ -92,7 +92,7 @@ public class Knn extends SingleFieldFullTextFunction implements OptionalArgument
     public static final NamedWriteableRegistry.Entry ENTRY = new NamedWriteableRegistry.Entry(Expression.class, "Knn", Knn::readFrom);
     public static final FunctionDefinition DEFINITION = FunctionDefinition.def(Knn.class)
         .ternary(Knn::new)
-        .capabilities("runtime_anywhere", "runtime_similarity_function", "single_dimension_query_vector")
+        .capabilities("runtime_anywhere", "runtime_similarity_function", "single_dimension_query_vector", "non_indexed_fields")
         .name("knn");
 
     private final Integer implicitK;
@@ -124,7 +124,8 @@ public class Knn extends SingleFieldFullTextFunction implements OptionalArgument
         returnType = "boolean",
         briefSummary = "Finds the k nearest vectors to a query vector using a similarity metric.",
         description = "Finds the k nearest vectors to a query vector, as measured by a similarity metric. "
-            + "knn function finds nearest vectors through approximate search on indexed dense_vectors or semantic_text fields.",
+            + "Uses approximate search on indexed dense_vector or semantic_text fields, and exact scoring on dense_vector fields "
+            + "mapped with index: false. Exact scoring evaluates every matching vector; SORT _score DESC and LIMIT select the nearest results.",
         examples = { @Example(file = "knn-function", tag = "knn-function") },
         appliesTo = {
             @FunctionAppliesTo(lifeCycle = FunctionAppliesToLifecycle.PREVIEW, version = "9.2.0"),
@@ -565,7 +566,11 @@ public class Knn extends SingleFieldFullTextFunction implements OptionalArgument
         String fieldName = getNameFromFieldAttribute(fieldAttribute);
         Map<String, Object> opts = queryOptions();
 
-        return new ExactKnnQueryBuilder(VectorData.fromFloats(queryAsFloats()), fieldName, (Float) opts.get(VECTOR_SIMILARITY_FIELD));
+        return new ExactKnnQueryBuilder(
+            VectorData.fromFloats(queryAsFloats()),
+            fieldName,
+            (Float) opts.get(VECTOR_SIMILARITY_FIELD.getPreferredName())
+        );
     }
 
     @Override

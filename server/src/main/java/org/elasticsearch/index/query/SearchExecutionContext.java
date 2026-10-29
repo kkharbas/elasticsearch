@@ -680,6 +680,14 @@ public class SearchExecutionContext extends QueryRewriteContext {
         return nestedLookup() == NestedLookup.EMPTY && indexSortedOnField(field);
     }
 
+    /**
+     * Whether vector search may fall back to exact scoring for fields without a vector index. Consumers such as ES|QL
+     * can apply their own final limit after scoring all matching vectors; ordinary kNN searches require a vector index.
+     */
+    public boolean allowNonIndexedVectorSearch() {
+        return false;
+    }
+
     public ParsedQuery toQuery(QueryBuilder queryBuilder) {
         reset();
         try {

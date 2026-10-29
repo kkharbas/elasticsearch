@@ -581,6 +581,18 @@ public class KnnVectorQueryBuilder extends LeafQueryBuilder<KnnVectorQueryBuilde
             filterQuery = buildFilterQuery(filterAdjusted);
         }
 
+        if (vectorFieldType.isSearchable() == false && context.allowNonIndexedVectorSearch()) {
+            // ES|QL applies its final LIMIT after exact scoring, as it does for runtime vectors. Reuse the dense_vector
+            // query's factory so the default similarity, threshold conversion, and doc-values scoring stay consistent.
+            Query exactQuery = vectorFieldType.createExactKnnQuery(queryVector, vectorSimilarity, null, false);
+            if (filterQuery == null) {
+                return exactQuery;
+            }
+            return new BooleanQuery.Builder().add(exactQuery, BooleanClause.Occur.MUST)
+                .add(filterQuery, BooleanClause.Occur.FILTER)
+                .build();
+        }
+
         DenseVectorFieldMapper.FilterHeuristic heuristic = context.getIndexSettings().getHnswFilterHeuristic();
         boolean hnswEarlyTermination = context.getIndexSettings().getHnswEarlyTermination();
         float postFilterSelectivityThreshold = context.getIndexSettings().getPostFilterSelectivityThreshold();
